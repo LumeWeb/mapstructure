@@ -3,9 +3,9 @@
 // into a native Go structure.
 //
 // The Go structure can be arbitrarily complex, containing slices,
-// other structs, etc. and the decoder will properly decode nested
+// other structs, etc. and the Unmarshaler will properly decode nested
 // maps and so on into the proper structures in the native Go struct.
-// See the examples to see what the decoder is capable of.
+// See the examples to see what the Unmarshaler is capable of.
 //
 // The simplest function to start with is Decode.
 //
@@ -129,7 +129,7 @@
 // # Unexported fields
 //
 // Since unexported (private) struct fields cannot be set outside the package
-// where they are defined, the decoder will simply skip them.
+// where they are defined, the Unmarshaler will simply skip them.
 //
 // For this output type definition:
 //
@@ -196,7 +196,7 @@ type DecodeHookFuncKind func(reflect.Kind, reflect.Kind, interface{}) (interface
 // values.
 type DecodeHookFuncValue func(from reflect.Value, to reflect.Value) (interface{}, error)
 
-// DecoderConfig is the configuration that is used to create a new decoder
+// DecoderConfig is the configuration that is used to create a new Unmarshaler
 // and allows customization of various aspects of decoding.
 type DecoderConfig struct {
 	// DecodeHook, if set, will be called before any decoding and any
@@ -368,8 +368,8 @@ func WeakDecodeMetadata(input interface{}, output interface{}, metadata *Metadat
 	return decoder.Decode(input)
 }
 
-// NewDecoder returns a new decoder for the given configuration. Once
-// a decoder has been returned, the same configuration must not be used
+// NewDecoder returns a new Unmarshaler for the given configuration. Once
+// a Unmarshaler has been returned, the same configuration must not be used
 // again.
 func NewDecoder(config *DecoderConfig) (*Decoder, error) {
 	val := reflect.ValueOf(config.Result)
@@ -459,6 +459,13 @@ func (d *Decoder) decode(name string, input interface{}, outVal reflect.Value) e
 		input, err = DecodeHookExec(d.config.DecodeHook, inputVal, outVal)
 		if err != nil {
 			return fmt.Errorf("error decoding '%s': %w", name, err)
+		}
+	}
+
+	if outVal.CanAddr() {
+		v := outVal.Addr()
+		if u, ok := v.Interface().(Unmarshaler); ok {
+			return u.DecodeMapstructure(input)
 		}
 	}
 
@@ -1579,4 +1586,8 @@ func dereferencePtrToStructIfNeeded(v reflect.Value, tagName string) reflect.Val
 		return deref
 	}
 	return v
+}
+
+type Unmarshaler interface {
+	DecodeMapstructure(interface{}) error
 }
