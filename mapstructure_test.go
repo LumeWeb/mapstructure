@@ -2,6 +2,7 @@ package mapstructure
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"sort"
@@ -48,6 +49,10 @@ type BasicPointer struct {
 
 type BasicSquash struct {
 	Test Basic `mapstructure:",squash"`
+}
+
+type BasicJSONInline struct {
+	Test Basic `json:",inline"`
 }
 
 type Embedded struct {
@@ -106,6 +111,60 @@ type EmbeddedArray struct {
 
 type SquashOnNonStructType struct {
 	InvalidSquashType int `mapstructure:",squash"`
+}
+
+type TestInterface interface {
+	GetVfoo() string
+	GetVbarfoo() string
+	GetVfoobar() string
+}
+
+type TestInterfaceImpl struct {
+	Vfoo string
+}
+
+func (t *TestInterfaceImpl) GetVfoo() string {
+	return t.Vfoo
+}
+
+func (t *TestInterfaceImpl) GetVbarfoo() string {
+	return ""
+}
+
+func (t *TestInterfaceImpl) GetVfoobar() string {
+	return ""
+}
+
+type TestNestedInterfaceImpl struct {
+	SquashOnNestedInterfaceType `mapstructure:",squash"`
+	Vfoo                        string
+}
+
+func (t *TestNestedInterfaceImpl) GetVfoo() string {
+	return t.Vfoo
+}
+
+func (t *TestNestedInterfaceImpl) GetVbarfoo() string {
+	return t.Vbarfoo
+}
+
+func (t *TestNestedInterfaceImpl) GetVfoobar() string {
+	return t.NestedSquash.Vfoobar
+}
+
+type SquashOnInterfaceType struct {
+	TestInterface `mapstructure:",squash"`
+	Vbar          string
+}
+
+type NestedSquash struct {
+	SquashOnInterfaceType `mapstructure:",squash"`
+	Vfoobar               string
+}
+
+type SquashOnNestedInterfaceType struct {
+	NestedSquash NestedSquash `mapstructure:",squash"`
+	Vbarfoo      string
 }
 
 type Map struct {
@@ -473,6 +532,62 @@ func TestDecodeFrom_BasicSquash(t *testing.T) {
 	var result map[string]interface{}
 	err := Decode(input, &result)
 	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if _, ok = result["Test"]; ok {
+		t.Error("test should not be present in map")
+	}
+
+	v, ok = result["Vstring"]
+	if !ok {
+		t.Error("vstring should be present in map")
+	} else if !reflect.DeepEqual(v, "foo") {
+		t.Errorf("vstring value should be 'foo': %#v", v)
+	}
+}
+
+func TestDecode_BasicJSONInline(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"vstring": "foo",
+	}
+
+	var result BasicJSONInline
+	d, err := NewDecoder(&DecoderConfig{TagName: "json", SquashTagOption: "inline", Result: &result})
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if err := d.Decode(input); err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if result.Test.Vstring != "foo" {
+		t.Errorf("vstring value should be 'foo': %#v", result.Test.Vstring)
+	}
+}
+
+func TestDecodeFrom_BasicJSONInline(t *testing.T) {
+	t.Parallel()
+
+	var v interface{}
+	var ok bool
+
+	input := BasicJSONInline{
+		Test: Basic{
+			Vstring: "foo",
+		},
+	}
+
+	var result map[string]interface{}
+	d, err := NewDecoder(&DecoderConfig{TagName: "json", SquashTagOption: "inline", Result: &result})
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if err := d.Decode(input); err != nil {
 		t.Fatalf("got an err: %s", err.Error())
 	}
 
@@ -987,6 +1102,147 @@ func TestDecode_SquashOnNonStructType(t *testing.T) {
 		t.Fatal("unexpected success decoding invalid squash field type")
 	} else if !strings.Contains(err.Error(), "unsupported type for squash") {
 		t.Fatalf("unexpected error message for invalid squash field type: %s", err)
+	}
+}
+
+func TestDecode_SquashOnInterfaceType(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"VFoo": "42",
+		"VBar": "43",
+	}
+
+	result := SquashOnInterfaceType{
+		TestInterface: &TestInterfaceImpl{},
+	}
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err)
+	}
+
+	res := result.GetVfoo()
+	if res != "42" {
+		t.Errorf("unexpected value for VFoo: %s", res)
+	}
+
+	res = result.Vbar
+	if res != "43" {
+		t.Errorf("unexpected value for Vbar: %s", res)
+	}
+}
+
+func TestDecode_SquashOnOuterNestedInterfaceType(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"VFoo":    "42",
+		"VBar":    "43",
+		"Vfoobar": "44",
+		"Vbarfoo": "45",
+	}
+
+	result := SquashOnNestedInterfaceType{
+		NestedSquash: NestedSquash{
+			SquashOnInterfaceType: SquashOnInterfaceType{
+				TestInterface: &TestInterfaceImpl{},
+			},
+		},
+	}
+
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err)
+	}
+
+	res := result.NestedSquash.GetVfoo()
+	if res != "42" {
+		t.Errorf("unexpected value for VFoo: %s", res)
+	}
+
+	res = result.NestedSquash.Vbar
+	if res != "43" {
+		t.Errorf("unexpected value for Vbar: %s", res)
+	}
+
+	res = result.NestedSquash.Vfoobar
+	if res != "44" {
+		t.Errorf("unexpected value for Vfoobar: %s", res)
+	}
+
+	res = result.Vbarfoo
+	if res != "45" {
+		t.Errorf("unexpected value for Vbarfoo: %s", res)
+	}
+}
+
+func TestDecode_SquashOnInnerNestedInterfaceType(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"VFoo":    "42",
+		"VBar":    "43",
+		"Vfoobar": "44",
+		"Vbarfoo": "45",
+	}
+
+	result := SquashOnInterfaceType{
+		TestInterface: &TestNestedInterfaceImpl{
+			SquashOnNestedInterfaceType: SquashOnNestedInterfaceType{
+				NestedSquash: NestedSquash{
+					SquashOnInterfaceType: SquashOnInterfaceType{
+						TestInterface: &TestInterfaceImpl{},
+					},
+				},
+			},
+		},
+	}
+
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err)
+	}
+
+	res := result.GetVfoo()
+	if res != "42" {
+		t.Errorf("unexpected value for VFoo: %s", res)
+	}
+
+	res = result.Vbar
+	if res != "43" {
+		t.Errorf("unexpected value for Vbar: %s", res)
+	}
+
+	res = result.GetVfoobar()
+	if res != "44" {
+		t.Errorf("unexpected value for Vfoobar: %s", res)
+	}
+
+	res = result.GetVbarfoo()
+	if res != "45" {
+		t.Errorf("unexpected value for Vbarfoo: %s", res)
+	}
+}
+
+func TestDecode_SquashOnNilInterfaceType(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"VFoo": "42",
+		"VBar": "43",
+	}
+
+	result := SquashOnInterfaceType{
+		TestInterface: nil,
+	}
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err)
+	}
+
+	res := result.Vbar
+	if res != "43" {
+		t.Errorf("unexpected value for Vbar: %s", res)
 	}
 }
 
@@ -2323,13 +2579,17 @@ func TestInvalidType(t *testing.T) {
 		t.Fatal("error should exist")
 	}
 
-	derr, ok := err.(*Error)
-	if !ok {
-		t.Fatalf("error should be kind of Error, instead: %#v", err)
+	var derr interface {
+		Unwrap() []error
 	}
 
-	if derr.Errors[0] !=
-		"'Vstring' expected type 'string', got unconvertible type 'int', value: '42'" {
+	if !errors.As(err, &derr) {
+		t.Fatalf("error should be a type implementing Unwrap() []error, instead: %#v", err)
+	}
+
+	errs := derr.Unwrap()
+
+	if errs[0].Error() != "'Vstring' expected type 'string', got unconvertible type 'int', value: '42'" {
 		t.Errorf("got unexpected error: %s", err)
 	}
 
@@ -2342,12 +2602,13 @@ func TestInvalidType(t *testing.T) {
 		t.Fatal("error should exist")
 	}
 
-	derr, ok = err.(*Error)
-	if !ok {
-		t.Fatalf("error should be kind of Error, instead: %#v", err)
+	if !errors.As(err, &derr) {
+		t.Fatalf("error should be a type implementing Unwrap() []error, instead: %#v", err)
 	}
 
-	if derr.Errors[0] != "cannot parse 'Vuint', -42 overflows uint" {
+	errs = derr.Unwrap()
+
+	if errs[0].Error() != "cannot parse 'Vuint', -42 overflows uint" {
 		t.Errorf("got unexpected error: %s", err)
 	}
 
@@ -2360,12 +2621,13 @@ func TestInvalidType(t *testing.T) {
 		t.Fatal("error should exist")
 	}
 
-	derr, ok = err.(*Error)
-	if !ok {
-		t.Fatalf("error should be kind of Error, instead: %#v", err)
+	if !errors.As(err, &derr) {
+		t.Fatalf("error should be a type implementing Unwrap() []error, instead: %#v", err)
 	}
 
-	if derr.Errors[0] != "cannot parse 'Vuint', -42.000000 overflows uint" {
+	errs = derr.Unwrap()
+
+	if errs[0].Error() != "cannot parse 'Vuint', -42.000000 overflows uint" {
 		t.Errorf("got unexpected error: %s", err)
 	}
 }
@@ -2818,6 +3080,235 @@ func TestDecoder_IgnoreUntaggedFieldsWithStruct(t *testing.T) {
 	}
 	if !reflect.DeepEqual(expected, actual) {
 		t.Fatalf("Decode() expected: %#v\ngot: %#v", expected, actual)
+	}
+}
+
+func TestDecoder_DecodeNilOption(t *testing.T) {
+	t.Parallel()
+
+	type Transformed struct {
+		Message string
+		When    string
+	}
+
+	helloHook := func(reflect.Type, reflect.Type, interface{}) (interface{}, error) {
+		return Transformed{Message: "hello"}, nil
+	}
+	goodbyeHook := func(reflect.Type, reflect.Type, interface{}) (interface{}, error) {
+		return Transformed{Message: "goodbye"}, nil
+	}
+	appendHook := func(from reflect.Value, to reflect.Value) (interface{}, error) {
+		if from.Kind() == reflect.Map {
+			stringMap := from.Interface().(map[string]interface{})
+			if stringMap == nil {
+				stringMap = make(map[string]interface{})
+			}
+			stringMap["when"] = "see you later"
+			return stringMap, nil
+		}
+		return from.Interface(), nil
+	}
+
+	tests := []struct {
+		name           string
+		decodeNil      bool
+		input          interface{}
+		result         Transformed
+		expectedResult Transformed
+		decodeHook     DecodeHookFunc
+	}{
+		{
+			name:           "decodeNil=true for nil input with hook",
+			decodeNil:      true,
+			input:          nil,
+			decodeHook:     helloHook,
+			expectedResult: Transformed{Message: "hello"},
+		},
+		{
+			name:           "decodeNil=true for nil input without hook",
+			decodeNil:      true,
+			input:          nil,
+			expectedResult: Transformed{Message: ""},
+		},
+		{
+			name:           "decodeNil=false for nil input with hook",
+			decodeNil:      false,
+			input:          nil,
+			decodeHook:     helloHook,
+			expectedResult: Transformed{Message: ""},
+		},
+		{
+			name:           "decodeNil=false for nil input without hook",
+			decodeNil:      false,
+			input:          nil,
+			expectedResult: Transformed{Message: ""},
+		},
+		{
+			name:           "decodeNil=true for non-nil input without hook",
+			decodeNil:      true,
+			input:          map[string]interface{}{"message": "bar"},
+			expectedResult: Transformed{Message: "bar"},
+		},
+		{
+			name:           "decodeNil=true for non-nil input with hook",
+			decodeNil:      true,
+			input:          map[string]interface{}{"message": "bar"},
+			decodeHook:     goodbyeHook,
+			expectedResult: Transformed{Message: "goodbye"},
+		},
+		{
+			name:           "decodeNil=false for non-nil input without hook",
+			decodeNil:      false,
+			input:          map[string]interface{}{"message": "bar"},
+			expectedResult: Transformed{Message: "bar"},
+		},
+		{
+			name:           "decodeNil=false for non-nil input with hook",
+			decodeNil:      false,
+			input:          map[string]interface{}{"message": "bar"},
+			decodeHook:     goodbyeHook,
+			expectedResult: Transformed{Message: "goodbye"},
+		},
+		{
+			name:           "decodeNil=true for nil input without hook and non-empty result",
+			decodeNil:      true,
+			input:          nil,
+			result:         Transformed{Message: "foo"},
+			expectedResult: Transformed{Message: "foo"},
+		},
+		{
+			name:           "decodeNil=true for nil input with hook and non-empty result",
+			decodeNil:      true,
+			input:          nil,
+			result:         Transformed{Message: "foo"},
+			decodeHook:     helloHook,
+			expectedResult: Transformed{Message: "hello"},
+		},
+		{
+			name:           "decodeNil=false for nil input without hook and non-empty result",
+			decodeNil:      false,
+			input:          nil,
+			result:         Transformed{Message: "foo"},
+			expectedResult: Transformed{Message: "foo"},
+		},
+		{
+			name:           "decodeNil=false for nil input with hook and non-empty result",
+			decodeNil:      false,
+			input:          nil,
+			result:         Transformed{Message: "foo"},
+			decodeHook:     helloHook,
+			expectedResult: Transformed{Message: "foo"},
+		},
+		{
+			name:           "decodeNil=false for non-nil input with hook that appends a value",
+			decodeNil:      false,
+			input:          map[string]interface{}{"message": "bar"},
+			decodeHook:     appendHook,
+			expectedResult: Transformed{Message: "bar", When: "see you later"},
+		},
+		{
+			name:           "decodeNil=true for non-nil input with hook that appends a value",
+			decodeNil:      true,
+			input:          map[string]interface{}{"message": "bar"},
+			decodeHook:     appendHook,
+			expectedResult: Transformed{Message: "bar", When: "see you later"},
+		},
+		{
+			name:           "decodeNil=true for nil input with hook that appends a value",
+			decodeNil:      true,
+			decodeHook:     appendHook,
+			expectedResult: Transformed{When: "see you later"},
+		},
+		{
+			name:           "decodeNil=false for nil input with hook that appends a value",
+			decodeNil:      false,
+			decodeHook:     appendHook,
+			expectedResult: Transformed{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := &DecoderConfig{
+				Result:     &test.result,
+				DecodeNil:  test.decodeNil,
+				DecodeHook: test.decodeHook,
+			}
+
+			decoder, err := NewDecoder(config)
+			if err != nil {
+				t.Fatalf("err: %s", err)
+			}
+
+			if err := decoder.Decode(test.input); err != nil {
+				t.Fatalf("got an err: %s", err)
+			}
+
+			if test.result != test.expectedResult {
+				t.Errorf("result should be: %#v, got %#v", test.expectedResult, test.result)
+			}
+		})
+	}
+}
+
+func TestDecoder_ExpandNilStructPointersHookFunc(t *testing.T) {
+	// a decoder hook that expands nil pointers in a struct to their zero value
+	// if the input map contains the corresponding key.
+	decodeHook := func(from reflect.Value, to reflect.Value) (any, error) {
+		if from.Kind() == reflect.Map && to.Kind() == reflect.Map {
+			toElem := to.Type().Elem()
+			if toElem.Kind() == reflect.Ptr && toElem.Elem().Kind() == reflect.Struct {
+				fromRange := from.MapRange()
+				for fromRange.Next() {
+					fromKey := fromRange.Key()
+					fromValue := fromRange.Value()
+					if fromValue.IsNil() {
+						newFromValue := reflect.New(toElem.Elem())
+						from.SetMapIndex(fromKey, newFromValue)
+					}
+				}
+			}
+		}
+		return from.Interface(), nil
+	}
+	type Struct struct {
+		Name string
+	}
+	type TestConfig struct {
+		Boolean   *bool              `mapstructure:"boolean"`
+		Struct    *Struct            `mapstructure:"struct"`
+		MapStruct map[string]*Struct `mapstructure:"map_struct"`
+	}
+	stringMap := map[string]any{
+		"boolean": nil,
+		"struct":  nil,
+		"map_struct": map[string]any{
+			"struct": nil,
+		},
+	}
+	var result TestConfig
+	decoder, err := NewDecoder(&DecoderConfig{
+		Result:     &result,
+		DecodeNil:  true,
+		DecodeHook: decodeHook,
+	})
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	if err := decoder.Decode(stringMap); err != nil {
+		t.Fatalf("got an err: %s", err)
+	}
+	if result.Boolean != nil {
+		t.Errorf("nil Boolean expected, got '%#v'", result.Boolean)
+	}
+	if result.Struct != nil {
+		t.Errorf("nil Struct expected, got '%#v'", result.Struct)
+	}
+	if len(result.MapStruct) == 0 {
+		t.Fatalf("not-empty MapStruct expected, got '%#v'", result.MapStruct)
+	}
+	if _, ok := result.MapStruct["struct"]; !ok {
+		t.Errorf("MapStruct['struct'] expected")
 	}
 }
 
